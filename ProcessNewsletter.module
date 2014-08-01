@@ -264,12 +264,12 @@ class ProcessNewsletter extends Process implements ConfigurableModule {
 		$field->name = 'newsletterTemplate';
 		$field->label = 'Newsletter';
 		$field->description = 'Select the Newsletter you want to send.';
+		$field->addOption('');
 		foreach($this->pages->get($this->pageArchiveID)->children('sort=-created') as $child) {
 			$options = array();
 			if($child->id == $this->input->get->id) $options = array('selected' => 'selected');
 			$field->addOption($child->url, $child->title, $options);
 		}
-		$field->attr('onload', 'document.getElementById("newsletterPreview").src = this.value;');
 		$field->attr('onchange', 'document.getElementById("newsletterPreview").src = this.value;');
 		$field->required = true;
 		$form->add($field);
