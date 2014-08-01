@@ -7,7 +7,7 @@
  *
  */
 
-class ProcessPageNewsletterSend extends Process {
+class ProcessPageNewsletterSend extends WireData implements Module {
 
 	public static function getModuleInfo() {
 		return array(
@@ -15,21 +15,14 @@ class ProcessPageNewsletterSend extends Process {
 			'version' => '1.00',
 			'summary' => __('Adds a send link to the newsletters in the page list. Not required but could be useful.'),
 			'permission' => 'page-newsletter',
-			'autoload' => true ,
+			'autoload' => 'process=ProcessPageList',
 			'requires' => array('ProcessNewsletter')
 		);
 	}
 
-	public function init() {
-		parent::init();
-	}
-
 	public function ready() {		
 		$process = wire('page')->process;
-		
-		if($process == 'ProcessPageList') {
-			$this->addHookAfter("ProcessPageListRender::getPageActions", $this, 'hookPageListActions');
-		}
+		$this->addHookAfter("ProcessPageListRender::getPageActions", $this, 'hookPageListActions');
 	}
 
 	public function hookPageListActions(HookEvent $event) {
@@ -45,52 +38,9 @@ class ProcessPageNewsletterSend extends Process {
 				'url' => $this->config->urls->admin . "setup/newsletter/send/?id=".$page->id
 			);
 
-			$actions = $this->array_insert($actions, ((int) count($actions)), $new_action);
+			$actions[] = $new_action;
 
 			$event->return = $actions;
 		}
-	}
-
-
-	/* --- module un-/installation part --- */
-
-	public function ___install() {
-
-		if(ProcessWire::versionMajor == 2 && ProcessWire::versionMinor < 4) {
-			throw new WireException($this->_("This module requires ProcessWire 2.5 or newer")); 
-		}
-		
-		$parent = $this->pages->get("name=page,parent=".$this->config->adminRootPageID);
-		$page = new Page();
-		$page->parent = $parent; 
-		$page->template = $this->templates->get('admin');
-		$page->name = "send"; 
-		$page->title = "Send Newsletter";
-		$page->process = $this; 
-		$page->sort = $parent->numChildren;
-		$page->save();
-		$this->message(sprintf($this->_("Installed to %s"), $page->path)); 
-	}
-
-
-	public function ___uninstall() {
-		$parent = $this->pages->get("name=page,parent=".$this->config->adminRootPageID);
-		$page = $parent->child("name=delete");
-
-		if($page->id) { 
-			$this->message(sprintf($this->_("Removed %s"), $page->path));
-			$this->pages->delete($page); 
-		}
-	}
-
-
-	/* --- helper functions --- */
-
-	private function array_insert($array, $pos, $val) {
-	   $array2 = array_splice($array,$pos);
-	   $array[] = $val;
-	   $array = array_merge($array,$array2);
-
-	   return $array;
 	}
 }
