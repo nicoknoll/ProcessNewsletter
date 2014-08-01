@@ -4,7 +4,7 @@ class ProcessNewsletter extends Process implements ConfigurableModule {
 	public static function getModuleInfo() {
 		return array(
 			'title' => 'Newsletter', 
-			'version' => 100, 
+			'version' => 101, 
 			'summary' => 'A standalone newsletter system for ProcessWire', 
 		  	'autoload' => false
 		); 
@@ -325,7 +325,7 @@ class ProcessNewsletter extends Process implements ConfigurableModule {
 				$receiver = $this->pages->get('template=pw_newsletter_data,title='.$email);
 				
 				// TODO: Add a check if email is send. Maybe unpublish if bouncing.
-				$this->sendMail($subject, $template, array($email => $email->title));
+				$this->sendMail($subject, $template, array($email => $email->pw_newsletter_subscription_name));
 			}
 		}
 		return true;
