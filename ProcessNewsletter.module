@@ -269,6 +269,7 @@ class ProcessNewsletter extends Process implements ConfigurableModule {
 			if($child->id == $this->input->get->id) $options = array('selected' => 'selected');
 			$field->addOption($child->url, $child->title, $options);
 		}
+		$field->attr('onload', 'document.getElementById("newsletterPreview").src = this.value;');
 		$field->attr('onchange', 'document.getElementById("newsletterPreview").src = this.value;');
 		$field->required = true;
 		$form->add($field);
