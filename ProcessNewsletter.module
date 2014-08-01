@@ -23,9 +23,9 @@ class ProcessNewsletter extends Process implements ConfigurableModule {
 		$domain = $_SERVER['HTTP_HOST'];
 		
 		return array(
-			'templateFile' 	=> wire('config')->paths->MarkupNewsletter.'newsletter.tpl',
-			'tempFile'     	=> wire('config')->paths->MarkupNewsletter.'preview.html',
-			'tempFileUrl'  	=> wire('config')->urls->MarkupNewsletter.'preview.html',
+			'templateFile' 	=> wire('config')->paths->ProcessNewsletter.'newsletter.tpl',
+			'tempFile'     	=> wire('config')->paths->ProcessNewsletter.'preview.html',
+			'tempFileUrl'  	=> wire('config')->urls->ProcessNewsletter.'preview.html',
 			
 			'pageNewsletterID' => '',
 			'pageReceiversID' => '',
@@ -304,6 +304,8 @@ class ProcessNewsletter extends Process implements ConfigurableModule {
 	
 	
 	private function sendMails($subject, $template, $receivers) {
+		$receiversEmails = explode(',', $receivers);
+		
 		if($this->lazyCronInstalled) {
 			// add to queue and run it one time
 			foreach($receivers as $email => $name) {
@@ -317,9 +319,12 @@ class ProcessNewsletter extends Process implements ConfigurableModule {
 			$this->processQueue();
 		} else {
 			// if lazy cron is not installed just send all of the mails
-			foreach($receivers as $email => $name) {
+			foreach($receiversEmails as $email) {
+				$email = trim($email);
+				$receiver = $this->pages->get('template=pw_newsletter_data,title='.$email);
+				
 				// TODO: Add a check if email is send. Maybe unpublish if bouncing.
-				$this->sendMail($subject, $template, array($email => $name));
+				$this->sendMail($subject, $template, array($email => $email->title));
 			}
 		}
 		return true;
