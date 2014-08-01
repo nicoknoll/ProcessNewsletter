@@ -1,0 +1,241 @@
+<?php
+
+class MarkupNewsletter extends WireData implements Module {
+	public static function getModuleInfo() {
+		return array(
+			'title' => 'Newsletter Frontend', 
+			'version' => 100, 
+			'summary' => 'The frontend helper for ProcessNewsletter. It contains subscription and unsubscription forms. It\'s not required to use this module to use the newsletter module but it\'s recommended if you want to create a public newsletter.', 
+		  	'autoload' => false,
+		  	'requires' => array('ProcessNewsletter')
+		); 
+	}
+	
+	
+	private $doubleOptIn = true;
+	
+	
+	// get data from ProcessNewsletter and make it usable
+	public function __construct() {
+		$data = wire('modules')->getModuleConfigData('ProcessNewsletter'); 
+		$data = array_merge(ProcessNewsletter::getDefaultConfig(), $data);
+		
+		foreach($data as $key => $value) {
+			$this->$key = $value;
+		}
+	}
+	
+	
+	
+	/* connection to backend */
+	
+	public function ___subscribe($mail, $name = '') {
+		if($mail == '' || !($this->pages->get('template=pw_newsletter_data,title='.$mail) instanceof NullPage)) return false;
+		
+		$s = new Page();
+		$s->parent = $this->pages->get($this->pageReceiversID);
+		$s->template = $this->templates->get('pw_newsletter_data');
+		
+		$s->title = $mail;
+		$s->pw_newsletter_subscription_name = $name;
+		
+		if($this->doubleOptIn) $s->status = Page::statusUnpublished;
+		
+		if($s->save()) return true;	
+		return false;
+	}
+	
+	public function ___confirm($mail) {
+		if($mail == '' || $this->pages->get('include=all,template=pw_newsletter_data,title='.$mail) instanceof NullPage) return false;
+		
+		// include=all to include unpublished pages
+		$s = $this->pages->get('include=all,template=pw_newsletter_data,title='.$mail);
+		$s->status = Page::statusOn;
+		
+		if($s->save()) return true;	
+		return false;
+	}
+	
+	
+	public function ___unsubscribe($id) {
+		if($id == '' || $this->pages->get('template=pw_newsletter_data,title='.$mail) instanceof NullPage) return false;
+		
+		if(is_numeric($id)) {
+			$s = $this->pages->get($id);
+		} else {
+			$s = $this->pages->get('title='.$id);
+		}
+		
+		$title = $s->title;
+		
+		if($s->delete()) return true;
+		return false;
+	}
+	
+	
+	private function sendMail($subject, $text, $receiver) {
+		// create a new WireMail Instance. Best to use: WireMailSMTP (http://modules.processwire.com/modules/wire-mail-smtp/)
+		$mail = new WireMail(); 
+		
+		// specify receiver and sender
+		$mail->to($receiver);
+		$mail->from($this->senderName.' <'.$this->senderEmail.'>'); 
+		
+		// body stuff and subject
+		$mail->subject($subject); 
+		$mail->body(strip_tags($text)); 
+		$mail->bodyHTML($text); 
+		
+		// additional params
+		$mail->header('X-Mailer', 'ProcessWire'); 
+		$mail->param('-f '.$this->senderEmail);
+		
+		// send the mail
+		return $mail->send();
+	}
+	
+	
+	/* forms to render */
+
+	public function subscriptionForm() {
+		$email = $this->sanitizer->email($this->input->get->email);
+		
+		if($this->config->input->submitted) {
+			$email = $this->sanitizer->email($this->input->post->subscriptionMail);
+			$check = $this->subscribe($email, $this->sanitizer->text($this->input->post->subscriptionName));
+			
+			if($this->doubleOptIn) {
+				// send mail if double opt in
+				$salt = uniqid().'#'.$email.'#'.time();
+				$link = $this->page->httpUrl.'confirm/?s='.$salt;
+				$domain = $_SERVER['HTTP_HOST'];
+				$text = 'Thank you for your subscription at '.$domain.'. Please click the following link to confirm it: '.$link;
+				$this->sendMail('Confirm Subscription', $text, array($email => $this->sanitizer->text($this->input->post->subscriptionName)));
+				
+				if($check) {
+					return '<p class="newsletterMessage newsletterSuccess">Thank you for your subscription! You now have to confirm it. An email was send to your email account.</p>';
+				} else {
+					return '<p class="newsletterMessage newsletterError">There was an error with your subscription. Please try again.</p>';
+				}
+			} else {
+				if($check) {
+					return '<p class="newsletterMessage newsletterSuccess">Thank you for your subscription!</p>';
+				} else {
+					return '<p class="newsletterMessage newsletterError">There was an error with your subscription. Please try again.</p>';
+				}
+			}
+		}
+		
+		// define the form
+		$form = $this->modules->get("InputfieldForm");
+		$form->method = 'post';
+		$form->action = '../subscribe/';
+		
+		// add a "Enter name" field
+		$field = $this->modules->get('InputfieldText');
+		$field->name = 'subscriptionName';
+		$field->label = 'Name';
+		$form->add($field);
+		
+		// add a "Enter email" field
+		$field = $this->modules->get('InputfieldEmail');
+		$field->name = 'subscriptionMail';
+		$field->label = 'Email address';
+		$field->value = $email;
+		$field->required = true;
+		$form->add($field);
+		
+		// add submit
+		$field = $this->modules->get('InputfieldSubmit');
+		$field->name = 'submitted';
+		$field->value = 'Subscribe';
+		$form->add($field);
+		
+		// return the rendered form
+		return $form->render();
+	}
+	
+	
+	public function unsubscriptionForm() {
+		$email = $this->sanitizer->email($this->input->get->email);
+		
+		if($this->config->input->submitted) {
+			$email = $this->sanitizer->email($this->input->post->subscriptionMail);
+			$check = $this->unsubscribe($this->sanitizer->email($email));
+			
+			if($check) {
+				return '<p class="newsletterMessage newsletterSuccess">You have sucessfully unsubscribed.</p>';
+			} else{
+				return '<p class="newsletterMessage newsletterError">There was an error with your unsubscription. Please try again.</p>';
+			}
+		}
+		
+		
+		// define the form
+		$form = $this->modules->get("InputfieldForm");
+		$form->method = 'post';
+		$form->action = '../subscribe/';
+		
+		// add a "Enter email" field
+		$field = $this->modules->get('InputfieldEmail');
+		$field->name = 'subscriptionMail';
+		$field->label = 'Email address';
+		$field->value = $email;
+		$field->required = true;
+		$form->add($field);
+		
+		// add submit
+		$field = $this->modules->get('InputfieldSubmit');
+		$field->name = 'submitted';
+		$field->value = 'Unsubscribe';
+		$form->add($field);
+		
+		// return the rendered form
+		return $form->render();
+	}
+	
+	public function confirmScreen() {
+		$salt = $this->input->get->s;
+		$saltDecoded = base64_decode($salt);
+		preg_match('%.*\#(.*)\#.*%Uis', $saltDecoded, $emailMatches);
+		$email = $emailMatches[1];
+		
+		// confirm the registration
+		$check = $this->confirm($email);
+		
+		// return the rendered form
+		if($check) {
+			return '<p class="newsletterMessage newsletterSuccess">You have sucessfully confirmed your subscription.</p>';
+		} else{
+			return '<p class="newsletterMessage newsletterError">There was an error with your confirmation. Please try again.</p>';
+		}
+	}
+	
+	
+	/* render */
+	
+	public function render() {
+		// switch to the right form
+		switch($this->input->urlSegment1) {
+			//redirect to subscribe
+			default:
+				$this->session->redirect($this->page->url.'subscribe/');
+			break;
+			//subscribe
+			case 'subscribe':
+				return $this->subscriptionForm();
+			break;
+			//subscribe
+			case 'unsubscribe':
+				return $this->unsubscriptionForm();
+			break;
+			//confirm subscription
+			case 'confirm':
+				return $this->confirmScreen();
+			break;
+		}
+	}
+	
+}
+
+?>

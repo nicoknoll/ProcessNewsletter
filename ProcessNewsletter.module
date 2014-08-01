@@ -1,0 +1,1079 @@
+<?php
+
+class ProcessNewsletter extends Process implements ConfigurableModule {
+	public static function getModuleInfo() {
+		return array(
+			'title' => 'Newsletter', 
+			'version' => 100, 
+			'summary' => 'A standalone newsletter system for ProcessWire', 
+		  	'autoload' => false
+		); 
+	}
+	
+	/* BACKEND STUFF */
+	
+	private $cc, $lazyCronInstalled = false;
+	
+
+	/**
+	 * Default configuration
+	 *
+	 */
+	static public function getDefaultConfig() {
+		$domain = $_SERVER['HTTP_HOST'];
+		
+		return array(
+			'templateFile' 	=> wire('config')->paths->MarkupNewsletter.'newsletter.tpl',
+			'tempFile'     	=> wire('config')->paths->MarkupNewsletter.'preview.html',
+			'tempFileUrl'  	=> wire('config')->urls->MarkupNewsletter.'preview.html',
+			
+			'pageNewsletterID' => '',
+			'pageReceiversID' => '',
+			'pageArchiveID' 	=> '',
+			
+			'senderName' 	=> '['.$domain.'] Newsletter',
+			'senderEmail'	=> 'newsletter@'.$domain,
+			'receiverEmail'	=> 'newsletter@'.$domain,
+			'bulkSize'		=> 50,
+			'bulkQueue'		=> '' 
+		);
+	}
+	
+	
+	/**
+	 * Populate default configuration (will be overwritten after constructor with user's own configuration)
+	 *
+	 */
+	public function __construct() {
+		foreach(self::getDefaultConfig() as $key => $value) {
+			$this->$key = $value;
+		}
+	}
+	
+	
+	
+	public function init() {
+		parent::init();
+		if($this->page->template == 'admin') {
+			include 'ConvertCSSHelper.php';
+			$this->cc = new ConvertCSSHelper;
+		}	
+		
+		// Hooks
+		if($this->modules->isInstalled('LazyCron')) {
+			$this->lazyCronInstalled = true;
+			$this->addHook('LazyCron::everyHour', $this, 'processQueue');
+		}
+		
+	}
+	
+	
+	
+	
+
+	public function ___execute() {
+		$links[] = array(
+			'title' => 'Create Newsletter',
+			'url' => $this->config->urls->admin.'page/add/?parent_id='.$this->pageArchiveID,
+			'description' => 'Before you can send a Newsletter you have to create it first. Click here to do this.'
+		);
+		
+		$links[] = array(
+			'title' => 'Manage Newsletters',
+			'url' => './manage/',
+			'description' => 'Edit or delete newsletters.'
+		);
+		
+		$links[] = array(
+			'title' => 'Send Newsletter',
+			'url' => './send/',
+			'description' => 'Choose the Newsletter you want to send and the subscribers who should receive it.'
+		);
+		
+		$links[] = array(
+			'title' => 'Add Subscription',
+			'url' => './subscriptions/add/#addSubscription',
+			'description' => 'Add a subscription manually.'
+		);
+		
+		$links[] = array(
+			'title' => 'Manage Subscriptions', 
+			'url' => './subscriptions/',
+			'description' => 'Edit or delete subscriptions.'
+		);
+		
+		/*
+		$links[] = array(
+			'title' => 'Statistics',
+			'url' => './sendNewsletter/',
+			'description' => 'See an overview about newsletter sent, clicked links, etc.'
+		);
+		*/
+		// create pw_newsletter and pw_newsletter_manager templates for the admin sub pages
+		
+	
+		return '<p class="description">
+				Creating a newsletter is like creating a page. You have to add the needed fields to the template "pw_newsletter" and add a file in your "templates" folder called "pw_newsletter.php" in which you can design the output of your newsletter. <br><br>Then you can create a newsletter via the link below and save it. <br>If you finally want to send it you have to come back here and click "Send Newsletter" which takes you to a send overview page.		<br><br>		
+				</p>'.$this->makeNavigation($links);
+		
+	}
+	
+	/*
+	 * Helper to render a navigation list
+	 *
+	 */
+	
+	private function makeNavigation($links) {
+		$out = "\n<dl class='nav'>";
+		$cnt = 0; 
+		foreach($links as $link) {
+			if(!empty($link['description'])) {	
+				$title = htmlspecialchars($link['title']); 
+				$summary = htmlspecialchars($link['description']);
+			} else {
+				$title = htmlspecialchars($link['title']); 
+				$summary = $this->_('No description available');
+			}
+			$out .= "\n\t<dt><a class='label' href='".$link['url']."'>".$title."</a></dt>";
+			if($summary) $out .= "\n\t<dd>".$summary."</dd>";
+			$cnt++;
+		}
+		
+		$out .= "\n</dl>";
+		if(!$cnt) $out = '';
+		return $out; 
+	}
+	
+	
+	
+	
+	
+	
+	public function ___executeManage() {
+		// navigation stuff (just for good looking breadcrumb navigation)
+		$this->fuel('breadcrumbs')->add(new Breadcrumb('../', 'Newsletter')); 
+		$this->setFuel('processHeadline', "Newsletters");
+		
+		// process the transmitted form
+		if($this->config->input->submitted) {
+			if($this->config->input->action == 'delete') {
+				foreach($this->config->input->newsletters as $newsletter) {
+					$this->pages->delete($this->pages->get($newsletter));
+				}
+			}
+		}
+		
+		
+		// define return to provide php notice errors
+		$return = '';
+		
+		/* a table containing all the newsletters (only shown if not empty) */
+
+		if(count($this->pages->get($this->pageArchiveID)->children) > 0) {
+			// define the form
+			$form = $this->modules->get("InputfieldForm");
+			$form->method = 'post';
+			$form->action = '../manage/';
+		
+			// add the table
+			// TODO: Select all
+			$results = $this->modules->get('InputfieldMarkup');
+			$table = $this->modules->get('MarkupAdminDataTable');
+			$table->setEncodeEntities(false);
+			$header = array(
+				'<input type="checkbox" class="toggle_all">',
+				'Name',
+				'Added',
+				'Edit'
+			);
+			$table->headerRow($header);
+			// add the newsletters as columns to the table
+			foreach ($this->pages->get($this->pageArchiveID)->children as $p) {
+				$row = array(
+					"<input type='checkbox' name='newsletters[]' value='".$p->id."' class='toggle'>",
+					$p->title,
+					date($this->config->dateFormat, $p->created),
+					'<a href="'.$this->config->urls->admin.'page/edit/?id='.$p->id.'">Edit</a>'
+				);
+				$table->row($row);
+			}
+			$results->attr('value', $table->render());
+			$form->add($results);
+			
+			
+			// submit button and a select input field to choose which action should be used
+			$field = $this->modules->get('InputfieldHidden');
+			$field->name = 'action';
+			$field->value = 'delete';
+			$form->add($field);
+			
+			$field = $this->modules->get('InputfieldSubmit');
+			$field->name = 'submitted';
+			$field->value = 'Delete selected';
+			$form->add($field);
+			
+			// add the form to the output
+			$return .= $form->render();
+		} else {
+			// if no newsletters are created
+			$return .= '<p class="description">Nothing to see here yet.</p>';
+		}
+
+		// return the forms
+		return $return;
+	}
+	
+
+	
+
+	public function ___executeSend() {
+		// navigation stuff (just for good looking breadcrumb navigation)
+		$this->fuel('breadcrumbs')->add(new Breadcrumb('../', 'Newsletter')); 
+		$this->setFuel('processHeadline', "Send Newsletter");
+	
+		// Send the Newsletter after submit
+		if($this->config->input->submitted) {
+			if($this->config->input->newsletterTemplate != '' && $this->config->input->newsletterReceivers != '') {
+				$template = $this->pages->get('name='.basename($this->config->input->newsletterTemplate))->render();
+				$this->cc->setHTML($template);
+				$template = $this->cc->emogrify();
+				
+				$subject = $this->pages->get('name='.basename($this->config->input->newsletterTemplate))->title;
+				
+				$receivers = $this->config->input->newsletterReceivers;
+				unset($receivers['all']);
+				$receivers = implode(', ', $receivers);
+				
+				if($this->sendMails($subject, $template, $receivers)) {
+					$this->message('Alright! The Newsletter should be sent.');
+				} else {
+					$this->error('Hmm... something went wrong. Please make sure you have filled in the fields correctly.');
+				}
+			} else {
+				$this->error('Please fill in all of the required fields!');
+			}	
+		}
+		
+		// build the main form	
+		$form = $this->modules->get("InputfieldForm");
+		$form->method = 'post';
+		$form->action = '../send/';
+		
+		// select a newsletter
+		$field = $this->modules->get('InputfieldSelect');
+		$field->name = 'newsletterTemplate';
+		$field->label = 'Newsletter';
+		$field->description = 'Select the Newsletter you want to send.';
+		foreach($this->pages->get($this->pageArchiveID)->children('sort=-created') as $child) {
+			$options = array();
+			if($child->id == $this->input->get->id) $options = array('selected' => 'selected');
+			$field->addOption($child->url, $child->title, $options);
+		}
+		$field->attr('onchange', 'document.getElementById("newsletterPreview").src = this.value;');
+		$field->required = true;
+		$form->add($field);
+		
+		// create preview on the fly
+		$field = $this->modules->get('InputfieldMarkup'); 
+		$field->label = 'Preview';
+		$field->value = '<iframe src="" id="newsletterPreview" style="width:100%;border:0px;min-height:600px;"></iframe>';
+		$form->add($field);
+
+		// choose the receivers
+		// TODO: Select all
+		// TODO: Groups
+		$field = $this->modules->get('InputfieldCheckboxes');
+		$field->addOption(' ', 'Select all');
+		foreach($this->pages->get($this->pageReceiversID)->children as $child) {
+			$field->addOption($child->title);
+		}
+		$field->label = 'Receiver (comma separated)';
+		$field->name = 'newsletterReceivers';
+		$field->required = true;
+		$form->add($field);
+		
+		// submit
+		$field = $this->modules->get('InputfieldSubmit');
+		$field->name = 'submitted';
+		$field->value = 'Send';
+		$form->add($field);
+		
+		// return the rendered form
+		return $form->render();
+	}
+	
+	
+	private function sendMails($subject, $template, $receivers) {
+		if($this->lazyCronInstalled) {
+			// add to queue and run it one time
+			foreach($receivers as $email => $name) {
+				// TODO: Add a check if email is send. Maybe unpublish if bouncing.
+				$this->addQueue(array(
+					'subject' => $subject, 
+					'template' => $template, 
+					'receiver' => array($email => $name)
+				));
+			}
+			$this->processQueue();
+		} else {
+			// if lazy cron is not installed just send all of the mails
+			foreach($receivers as $email => $name) {
+				// TODO: Add a check if email is send. Maybe unpublish if bouncing.
+				$this->sendMail($subject, $template, array($email => $name));
+			}
+		}
+		return true;
+	}
+	
+	private function sendMail($subject, $template, $receiver) {
+		// create a new WireMail Instance. Best to use: WireMailSMTP (http://modules.processwire.com/modules/wire-mail-smtp/)
+		$mail = new WireMail(); 
+		
+		// specify receiver and sender
+		$mail->to($receiver);
+		$mail->from($this->senderName.' <'.$this->senderEmail.'>'); 
+
+		// body stuff and subject
+		$mail->subject($subject); 
+		$mail->body(strip_tags($template)); 
+		$mail->bodyHTML($template); 
+		
+		// additional params
+		$mail->header('X-Mailer', 'ProcessWire'); 
+		$mail->param('-f '.$this->senderEmail);
+		
+		// send the mail
+		return $mail->send();
+	}
+	
+	
+	private function addQueue($array) {
+		$queue = json_decode($this->bulkQueue, true);
+		
+		$queue[] = $array;
+		// update config data $queue
+		$data = wire('modules')->getModuleConfigData($this); 
+		$data = array_merge($data, array('bulkQueue', json_encode($queue)));
+		wire('modules')->saveModuleConfigData($this, $data);
+	}
+	
+	
+	private function removeQueue($id) {
+		$queue = json_decode($this->bulkQueue, true);
+		
+		unset($queue[$id]);
+		
+		// update config data $queue
+		$data = wire('modules')->getModuleConfigData($this); 
+		$data = array_merge($data, array('bulkQueue', json_encode($queue)));
+		wire('modules')->saveModuleConfigData($this, $data);
+	}
+	
+	
+	private function resetQueueKeys() {
+		$queue = json_decode($this->bulkQueue, true);
+		
+		$queue = array_values($queue);
+		
+		// update config data $queue
+		$data = wire('modules')->getModuleConfigData($this); 
+		$data = array_merge($data, array('bulkQueue', json_encode($queue)));
+		wire('modules')->saveModuleConfigData($this, $data);
+		
+	}
+	
+	
+	private function processQueue() {
+		$queue = json_decode($this->bulkQueue, true);
+		
+		$ids = @array_slice($queue, 0, ((int)$this->bulkSize)-1);
+		if($ids) {
+			foreach($ids as $id => $data) {
+				$this->sendMail($data['subject'], $data['template'], $data['receiver']);
+				$this->removeQueue($id);
+			}
+		}
+		
+		// reset keys after sending to keep them low
+		$this->resetQueueKeys();
+	}
+	
+
+
+	public function ___executeSubscriptions() {
+		// navigation stuff (just for good looking breadcrumb navigation)
+		$this->fuel('breadcrumbs')->add(new Breadcrumb('../', 'Newsletter')); 
+		$this->setFuel('processHeadline', "Subscriptions");
+		
+		// process the transmitted form
+		// TODO: Another form for import export
+		if($this->config->input->submitted) {
+			if($this->config->input->action == 'add') {
+				$this->subscribe($this->config->input->subscriptionMail, $this->config->input->subscriptionName);
+			} elseif($this->config->input->action == 'delete') {
+				foreach($this->config->input->subscriptions as $s) {
+					$this->unsubscribe($s);
+				}
+			} elseif($this->config->input->action == 'import') {
+				$this->subscriptionImport();
+			} elseif($this->config->input->action == 'export') {
+				$this->subscriptionExport($this->config->input->subscriptions);
+			}
+		}
+		
+		
+		// define return to provide php notice errors
+		$return = '';
+		
+		/* a table containing all the subscriptions (only shown if not empty) */
+
+		if(count($this->pages->get($this->pageReceiversID)->children) > 0) {
+			// define the form
+			$form = $this->modules->get("InputfieldForm");
+			$form->method = 'post';
+			$form->action = '../subscriptions/';
+		
+		
+			// add a fieldset to make it appear more structured
+			$fieldset = $this->modules->get("InputfieldFieldset");
+			$fieldset->attr('id', 'manageSubscription');
+			$fieldset->label = "Manage Subscription";
+			if($this->input->urlSegment2 != 'add') {
+				$fieldset->collapsed = Inputfield::collapsedNo;
+			} else {
+				$fieldset->collapsed = Inputfield::collapsedYes;
+			}
+			$form->add($fieldset);
+		
+			// add the table
+			// TODO: Select all
+			$results = $this->modules->get('InputfieldMarkup');
+			$results->label = '';
+			$table = $this->modules->get('MarkupAdminDataTable');
+			$table->setEncodeEntities(false);
+			$header = array(
+				'<input type="checkbox" class="toggle_all">',
+				'Name',
+				'Mail',
+				'Added',
+				'Edit'
+			);
+			$table->headerRow($header);
+			// add the subscriptions as columns to the table
+			foreach ($this->pages->get($this->pageReceiversID)->children as $p) {
+				$row = array(
+					"<input type='checkbox' name='subscriptions[]' value='".$p->id."' class='toggle'>",
+					$p->pw_newsletter_subscription_name,
+					$p->title,
+					date($this->config->dateFormat, $p->created),
+					'<a href="'.$this->config->urls->admin.'page/edit/?id='.$p->id.'">Edit</a>'
+				);
+				$table->row($row);
+			}
+			$results->attr('value', $table->render());
+			$fieldset->add($results);
+			
+			
+			// submit button and a select input field to choose which action should be used
+			$field = $this->modules->get('InputfieldSelect');
+			$field->label = 'Action';
+			$field->name = 'action';
+			$field->description = 'Choose an action for the selected subscriptions.';
+			$field->addOption('delete', 'Delete');
+			$field->addOption('export', 'Export');
+			$field->required = true;
+			$fieldset->add($field);
+			
+			$field = $this->modules->get('InputfieldSubmit');
+			$field->name = 'submitted';
+			$field->value = 'Submit';
+			$fieldset->add($field);
+			
+			
+			// add the form to the output
+			$return .= $form->render();
+		}
+		
+		
+		
+		/* the "add subscription" form */
+		
+		// define the form
+		$form = $this->modules->get("InputfieldForm");
+		$form->method = 'post';
+		$form->action = '../subscriptions/';
+		
+		// add a fieldset to make it appear more structured
+		$fieldset = $this->modules->get("InputfieldFieldset");
+		$fieldset->attr('id', 'addSubscription');
+		$fieldset->label = "Add Subscription";
+		$fieldset->description = "Use this form to add subscriptions manually.";
+		if($this->input->urlSegment2 == 'add') {
+			$fieldset->collapsed = Inputfield::collapsedNo;
+		} else {
+			$fieldset->collapsed = Inputfield::collapsedYes;
+		}
+		$form->add($fieldset);
+		
+		
+		// add a "Enter name" field
+		$field = $this->modules->get('InputfieldText');
+		$field->name = 'subscriptionName';
+		$field->label = 'Name';
+		$field->description = 'Enter the name of the new subscriber.';
+		$fieldset->add($field);
+		
+		
+		// add a "Enter email" field
+		$field = $this->modules->get('InputfieldEmail');
+		$field->name = 'subscriptionMail';
+		$field->label = 'Email address';
+		$field->description = 'Enter the email adress of the new subscriber.';
+		$field->required = true;
+		$fieldset->add($field);
+	
+		
+		// submit button and a hidden input field to transmit which form is submitted
+		$field = $this->modules->get('InputfieldHidden');
+		$field->name = 'action';
+		$field->value = 'add';
+		$fieldset->add($field);
+	
+		$field = $this->modules->get('InputfieldSubmit');
+		$field->name = 'submitted';
+		$field->value = 'Add Subscription';
+		$fieldset->add($field);
+		
+		// add the form to the output
+		$return .= $form->render();
+		
+		
+		
+		/* the import/export form */
+		// TODO: export
+		// TODO: real import functionality
+		
+		// define the form
+		$form = $this->modules->get("InputfieldForm");
+		$form->method = 'post';
+		$form->action = '../subscriptions/';
+		
+		// add a fieldset to make it appear more structured
+		$fieldset = $this->modules->get("InputfieldFieldset");
+		$fieldset->attr('id', 'import');
+		$fieldset->label = "Import";
+		$fieldset->description = "To import a csv file choose the file or paste it's code. Your csv data has to has a first line with labels in it (like: \"id\",\"name\",\"email\",\"registered\"). The following columns will be imported: name, email, registered. Please make sure that they are named correctly. \"Name\" and \"registered\" are optional.";
+		$fieldset->collapsed = Inputfield::collapsedYes;
+		$form->add($fieldset);
+		
+		// upload field for a csv file
+		$field = $this->modules->get("InputfieldFile");
+		$field->name = 'importCsvFile';
+		$field->label = 'Csv File Upload';
+		$field->extensions = 'csv';
+		$field->maxFiles = 1;
+		$field->descriptionRows = 0;
+		$field->overwrite = true;
+		$field->collapsed = Inputfield::collapsedBlank;
+		$fieldset->add($field);
+		
+		// textarea where you can put your csv data in alternatively
+		$field = $this->modules->get('InputfieldTextarea');
+		$field->name = 'importCsvText';
+		$field->label = 'Paste CSV data';
+		$field->collapsed = Inputfield::collapsedBlank;
+		$fieldset->add($field);
+		
+		// textarea where you can put your csv data in alternatively
+		$field = $this->modules->get('InputfieldText');
+		$field->name = 'importCsvEnclosure';
+		$field->label = 'Enclosure';
+		$field->collapsed = Inputfield::collapsedNo;
+		$field->value = '"';
+		$fieldset->add($field);
+		
+		// textarea where you can put your csv data in alternatively
+		$field = $this->modules->get('InputfieldText');
+		$field->name = 'importCsvDelimiter';
+		$field->label = 'Delimiter';
+		$field->collapsed = Inputfield::collapsedNo;
+		$field->value = ',';
+		$fieldset->add($field);
+		
+		// submit button and a hidden input field to transmit which form is submitted
+		$field = $this->modules->get('InputfieldHidden');
+		$field->name = 'action';
+		$field->value = 'import';
+		$fieldset->add($field);
+		
+		$field = $this->modules->get('InputfieldSubmit');
+		$field->name = 'submitted';
+		$field->value = 'Import';
+		$fieldset->add($field);
+			
+		// add the form to the output
+		$return .= $form->render();
+		
+		// return the forms
+		return $return;
+	}
+	
+	
+	private function subscriptionImport() {
+		$path = $this->config->paths->files.$this->page->id.'/';
+		$filePath = $path.'import.csv';
+		
+		// TODO: Check folder and check file permission
+		if($_FILES['importCsvFile']['name'][0] != '') {
+			$csvFile = new WireUpload('importCsvFile'); // References the name of the field in the HTML form that uploads the photo
+			$csvFile->setMaxFiles(1);
+			$csvFile->setOverwrite(true);
+			$csvFile->setDestinationPath($path);
+			$csvFile->setValidExtensions(array('csv'));
+			$csvFile->setTargetFilename('import.csv');
+			$csvFile->execute();
+		} elseif($this->input->post->importCsvText != '') {
+			$handle = fopen($filePath, 'w');
+			fwrite($handle, $this->input->post->importCsvText);
+			fclose($handle);
+		}
+		
+		// the real import progress after the data is uploaded and saved as import.csv
+		$handle = fopen($filePath, "r"); 
+		$numImported = 0;
+		$header = array();
+		
+		while(($data = fgetcsv($handle, 0, $this->input->post->importCsvDelimiter, $this->input->post->importCsvEnclosure)) !== false) {
+			$cnt = count($data); 
+			
+			// skip blank lines
+			if(!$cnt || ($cnt == 1 && empty($data[0]))) continue;  
+			
+			// use first line as keys
+			if(!$numImported) {
+				$header = $data;
+				$numImported = 1;
+				continue;
+			} else {
+				$data = array_combine($header, $data);
+			}
+			
+			$this->subscribe($data['email'], $data['name']); 
+			
+			$numImported++;
+		}
+		
+		fclose($handle); 
+		unlink($filePath); 
+		
+	}
+	
+	
+	private function subscriptionExport($subscriptions) {
+
+		$filename = 'export.csv';
+		header( "Content-Type: text/csv;charset=utf-8" );
+		header( "Content-Disposition: attachment;filename=\"$filename\"" );
+		header("Pragma: no-cache");
+		header("Expires: 0");
+		
+		$fp = fopen('php://output', 'w');
+		$enclosure = '"';
+		$delimiter = ',';
+		
+		// add first line with tiles
+		// TODO: groups
+		array_unshift($subscriptions, array(
+			'id',
+			'name',
+			'email',
+			'registered',
+			'group'
+		));
+		
+		foreach ($subscriptions as $id) {
+			if(is_numeric($id)) {
+				// if id is an id
+				$subscriber = $this->pages->get($id);
+				$data = array(
+					$subscriber->id,
+					$subscriber->pw_newsletter_subscription_name,
+					$subscriber->title,
+					$subscriber->created,
+					''
+				);
+			} else {
+				// if $id is an array
+				$data = $id;
+			}
+			
+			// reset $str
+			$str = '';
+			foreach ($data as $cell) {
+				$cell = str_replace($enclosure, $enclosure . $enclosure, $cell);
+				$str .= $enclosure . $cell . $enclosure . $delimiter;
+			}
+
+			fputs($fp, substr($str, 0, -1) . "\n");
+		}
+		
+		fclose($fp);
+		
+		exit();
+	}
+	
+	/**
+	  * Formats a line (passed as a fields  array) as CSV and returns the CSV as a string.
+	  * Adapted from http://us3.php.net/manual/en/function.fputcsv.php#87120
+	  */
+	function arrayToCsv( array &$fields, $delimiter = ';', $enclosure = '"', $encloseAll = false, $nullToMysqlNull = false ) {
+		$delimiter_esc = preg_quote($delimiter, '/');
+		$enclosure_esc = preg_quote($enclosure, '/');
+	
+		$output = array();
+		foreach ( $fields as $field ) {
+			if ($field === null && $nullToMysqlNull) {
+				$output[] = 'NULL';
+				continue;
+			}
+	
+			// Enclose fields containing $delimiter, $enclosure or whitespace
+			if ( $encloseAll || preg_match( "/(?:${delimiter_esc}|${enclosure_esc}|\s)/", $field ) ) {
+				$output[] = $enclosure . str_replace($enclosure, $enclosure . $enclosure, $field) . $enclosure;
+			}
+			else {
+				$output[] = $field;
+			}
+		}
+	
+		return implode( $delimiter, $output );
+	}
+
+
+	
+	
+	/* FRONTEND STUFF */
+	
+	
+	public function ___subscribe($mail, $name = '') {
+		if($mail == '' || !($this->pages->get('template=pw_newsletter_data,title='.$mail) instanceof NullPage)) return false;
+		
+		$s = new Page();
+		$s->parent = $this->pages->get($this->pageReceiversID);
+		$s->template = $this->templates->get('pw_newsletter_data');
+		
+		$s->title = $mail;
+		$s->pw_newsletter_subscription_name = $name;
+		
+		if($s->save()) $this->message('Successfully subscribed.');	
+		else $this->error('There was an error while adding the subscription.');	
+	}
+	
+	
+	public function ___unsubscribe($id) {
+		if($id == '' || $this->pages->get('template=pw_newsletter_data,id='.$id) instanceof NullPage) return false;
+		
+		if(is_numeric($id)) {
+			$s = $this->pages->get($id);
+		} else {
+			$s = $this->pages->get('title='.$id);
+		}
+		
+		$title = $s->title;
+		
+		if($s->delete()) $this->message('Successfully unsubscribed '.$title.'.');	
+		else $this->error('There was an error while unsubscribing '.$title.'.');
+	}
+	
+	
+	
+	
+	
+	
+	
+	/*
+	 * Create the modules setting page
+	 *
+	 */
+	
+	static public function getModuleConfigInputfields(array $data) {
+	
+		// this is a container for fields, basically like a fieldset
+		$fields = new InputfieldWrapper();
+	
+		// since this is a static function, we can't use $this->modules, so get them from the global wire() function
+		$modules = wire('modules');
+	
+		// merge default config settings (custom values overwrite defaults)
+		$defaults = self::getDefaultConfig();
+		$data = array_merge($defaults, $data);
+	
+		// sender name
+		$field = $modules->get("InputfieldText");
+		$field->name = "senderName";
+		$field->label = "Sender name";
+		$field->description = "Enter the name which should appear as the sender of the newsletter.";
+		$field->value = $data['senderName'];
+		$fields->add($field);
+	
+		// sender email
+		$field = $modules->get("InputfieldEmail");
+		$field->name = "senderEmail";
+		$field->label = "Sender email";
+		$field->description = "Enter the email address which should appear as the sender of the newsletter. It's also the mail answers would go to.";
+		$field->value = $data['senderEmail'];
+		$fields->add($field);
+		
+		/*
+		// receiver email
+		$field = $modules->get("InputfieldEmail");
+		$field->name = "receiverEmail";
+		$field->label = "Receiver email";
+		$field->description = "Enter the email address which the newsletter should be sent to. The reals receivers will be in bcc so they won't see this address and nobody sees the receivers emails addresses. Doesn't have to be an existing email.";
+		$field->value = $data['receiverEmail'];
+		$fields->add($field);
+		
+		
+		// track statics
+		$field = $modules->get("InputfieldCheckbox");
+		$field->name = "receiverEmail";
+		$field->label = "Receiver email";
+		$field->notes = "Do you want to track some statisitics?";
+		$field->value = $data['receiverEmail'];
+		$fields->add($field);
+		*/
+		
+		// bulk size
+		$field = $modules->get("InputfieldInteger");
+		$field->name = "bulkSize";
+		$field->label = "Bulk Size";
+		$field->description = "To prevent the server to be marked as spamming it will send only a specific amount of emails per hour. Here you can adjust how many emails should be send per hour.";
+		$field->notes = "Requires LazyCron. Otherwise it will be ignored. Remember: As lower the number the better the chances not to get marked as spam but also slower to get all newsletters send.";
+		$field->value = $data['bulkSize'];
+		$fields->add($field);
+		
+		/*
+		// double - / single opt in
+		$field = $modules->get("InputfieldCheckbox");
+		$field->name = "receiverEmail";
+		$field->label = "Receiver email";
+		$field->notes = "Do you want to track some statisitics?";
+		$field->value = $data['receiverEmail'];
+		$fields->add($field);
+		*/
+		
+		// main page
+		$field = $modules->get("InputfieldHidden");
+		$field->name = "pageNewsletterID";
+		$field->value = $data['pageNewsletterID'];
+		$fields->add($field);
+		
+		// Receivers Parent
+		$field = $modules->get("InputfieldHidden");
+		$field->name = "pageReceiversID";
+		$field->value = $data['pageReceiversID'];
+		$fields->add($field);
+		
+		// Newsletter Archive 
+		$field = $modules->get("InputfieldHidden");
+		$field->name = "pageArchiveID";
+		$field->value = $data['pageArchiveID'];
+		$fields->add($field);
+		
+		// Newsletter Archive 
+		$field = $modules->get("InputfieldHidden");
+		$field->name = "bulkQueue";
+		$field->value = $data['bulkQueue'];
+		$fields->add($field);
+	
+		return $fields;
+	}
+
+
+
+
+
+
+
+
+
+
+	
+	
+	/* INSTALL STUFF */
+
+	public function ___install() {
+	
+		if(ProcessWire::versionMajor == 2 && ProcessWire::versionMinor < 4) {
+			throw new WireException("This module requires ProcessWire 2.4 or newer"); 
+		}
+		
+		// TODO: more permissions
+		$permission = new Permission;
+		$permission->name = 'page-newsletter';
+		$permission->title = 'The permssion to add, edit and send newsletters and subscribers.';
+		$permission->save();
+		
+		
+		// 1.0 create pw_newsletter ...
+		$pw_newsletter = new Template();
+		$pw_newsletter->name = 'pw_newsletter';
+		$pw_newsletter->label = 'Newsletter';
+		$pw_newsletter->useRoles = 1;
+		$pw_newsletter->noChildren = 1;
+		$pw_newsletter->noChangeTemplate = 1;
+		$pw_newsletter->set('roles', array(37));
+			
+			$pw_newsletter_fg = new Fieldgroup();
+			$pw_newsletter_fg->name = 'pw_newsletter';
+			$pw_newsletter_fg->add($this->fields->get('title')); // needed title field
+			$pw_newsletter_fg->save();
+			
+		$pw_newsletter->fieldgroup = $pw_newsletter_fg; // add the fieldgroup
+		$pw_newsletter->save();
+		
+		
+		// 1.1 ... and pw_newsletter_manager templates for the admin sub pages
+		$pw_newsletter_manager = new Template();
+		$pw_newsletter_manager->name = 'pw_newsletter_manager';
+		$pw_newsletter_manager->noParents = 1;
+		$pw_newsletter_manager->noChangeTemplate = 1;
+		$pw_newsletter_manager->noSettings = 1;
+		$pw_newsletter_manager->urlSegments = 1;
+		$pw_newsletter->useRoles = 1;
+		$pw_newsletter->set('roles', array(37));
+			
+			$pw_newsletter_manager_fg = new Fieldgroup();
+			$pw_newsletter_manager_fg->name = 'pw_newsletter_manager';
+			$pw_newsletter_manager_fg->add($this->fields->get('title')); // needed title field
+			$pw_newsletter_manager_fg->save();
+			
+		$pw_newsletter_manager->fieldgroup = $pw_newsletter_manager_fg; // add the fieldgroup
+		$pw_newsletter_manager->save();
+		
+		
+		// 1.2 ... and pw_newsletter_data for managing the subscriptions
+		$pw_newsletter_data = new Template();
+		$pw_newsletter_data->name = 'pw_newsletter_data';
+		$pw_newsletter_data->noParents = 1;
+		$pw_newsletter_data->noChildren = 1;
+		$pw_newsletter_data->noChangeTemplate = 1;
+		$pw_newsletter_data->noSettings = 1;
+		$pw_newsletter->useRoles = 1;
+			
+			$pw_newsletter_data_fg = new Fieldgroup();
+			$pw_newsletter_data_fg->name = 'pw_newsletter_data';
+			$pw_newsletter_data_fg->add($this->fields->get('title')); // needed title field
+			
+				// create a "pw_subscription_name" field
+				$field = new Field;
+				$field->type = $this->modules->get("FieldtypeText");
+				$field->name = "pw_newsletter_subscription_name";
+				$field->label = 'Name';
+				$field->save();
+			
+			$pw_newsletter_data_fg->add($field);
+			$pw_newsletter_data_fg->save();
+			
+		$pw_newsletter_data->fieldgroup = $pw_newsletter_data_fg; // add the fieldgroup
+		$pw_newsletter_data->save();
+		
+		
+		
+		
+		// 1.3 Set the dependcies for parent and child pages
+		
+		$pw_newsletter->parentTemplates = array($pw_newsletter_manager->id);
+		$pw_newsletter->save();
+		
+		$pw_newsletter_manager->childTemplates = array($pw_newsletter_data->id, $pw_newsletter->id);
+		$pw_newsletter_manager->save();
+		
+		$pw_newsletter_data->parentTemplates = array($pw_newsletter_manager->id);
+		$pw_newsletter_data->save();
+
+
+		// 2.0 Create the parent page
+		$pageParent = $this->pages->get("name=setup");
+		$page = new Page();
+		$page->parent = $pageParent; 
+		$page->template = $this->templates->get('admin');
+		$page->name = 'newsletter'; 
+		$page->title = "Newsletter";
+		$page->process = $this; 
+		$page->sort = $pageParent->numChildren;
+		$page->save();
+		 
+		
+		// 2.1 Create the receivers admin sub page
+		$receivers = new Page();
+		$receivers->parent = $page;
+		$receivers->template = $this->templates->get('pw_newsletter_manager');
+		$receivers->name = 'receivers';
+		$receivers->title = 'Subscription Manager';
+		$receivers->save();
+		
+		// 2.2 Create the newsletter archive admin sub page
+		$archive = new Page();
+		$archive->parent = $this->pages->get('/');
+		$archive->template = $this->templates->get('pw_newsletter_manager');
+		$archive->name = 'newsletterArchive';
+		$archive->title = 'Newsletter Archive';
+		$archive->status = Page::statusHidden;
+		$archive->save();		
+		
+		
+		
+		$data = array(
+		   'pageReceiversID' => $receivers->id,
+		   'pageArchiveID' => $archive->id,
+		   'pageNewsletterID' => $page->id
+		); 
+		
+		wire('modules')->saveModuleConfigData($this, $data);
+		
+		$this->message("Installed to {$page->path}"); 
+		if($page->parent->name == 'setup') $this->message("Click to your 'Setup' page to manage your files."); 
+	}
+	
+
+	
+	public function ___uninstall() {
+		
+		// newsletter setup page
+		$page = $this->pages->get($this->pageNewsletterID);
+		$this->pages->delete($page, true);	
+		
+		// newsletter archive
+		$this->pages->delete($this->pages->get($this->pageArchiveID), true);	
+		
+		// newsletter permission
+		$this->permissions->delete($this->permissions->get('page-newsletter'));	
+		
+		$template = $this->templates->get('pw_newsletter');
+		$fg = $template->fieldgroup;
+		if ($this->templates->delete($template)) {
+			$this->fieldgroups->delete($fg);
+			$this->message("Removed Template: pw_newsletter");
+		} 
+		
+		
+		$template = $this->templates->get('pw_newsletter_manager');
+		$fg = $template->fieldgroup;
+		if ($this->templates->delete($template)) {
+			$this->fieldgroups->delete($fg);
+			$this->message("Removed Template: pw_newsletter_manager");
+		} 
+		
+		$template = $this->templates->get('pw_newsletter_data');
+		$fg = $template->fieldgroup;
+		if ($this->templates->delete($template)) {
+			$this->fieldgroups->delete($fg);
+			$this->fields->delete($this->fields->get('pw_newsletter_subscription_name'));
+			$this->message("Removed Template: pw_newsletter_data");
+		}
+	}
+	
+}
+
+?>
