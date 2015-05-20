@@ -771,8 +771,13 @@ class ProcessNewsletter extends Process implements ConfigurableModule {
 		$s->title = $mail;
 		$s->pw_newsletter_subscription_name = $name;
 		
-		if($s->save()) $this->message('Successfully subscribed.');	
-		else $this->error('There was an error while adding the subscription.');	
+		if($s->save()) {
+			$this->message('Successfully subscribed.');
+			return true;
+		} else {
+			$this->error('There was an error while adding the subscription.');
+			return false;
+		}
 	}
 	
 	
@@ -787,8 +792,13 @@ class ProcessNewsletter extends Process implements ConfigurableModule {
 		
 		$title = $s->title;
 		
-		if($s->delete()) $this->message('Successfully unsubscribed '.$title.'.');	
-		else $this->error('There was an error while unsubscribing '.$title.'.');
+		if($s->delete()) {
+			$this->message('Successfully unsubscribed '.$title.'.');
+			return true;
+		} else {
+			$this->error('There was an error while unsubscribing '.$title.'.');
+			return false;
+		}
 	}
 	
 	
